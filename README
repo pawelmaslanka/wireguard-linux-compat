@@ -3,6 +3,27 @@ Nord Security task
 This README file has been created to identify what and which file has been changed as required for the Nord Security recruitment process.
 
 In this repository I placed solution for the tasks no. 2 and 3. The solution has been pushed into separate branch called 'nord_task'.
-For the task no. 2, I modfied file @src/netlink.c
-I created two new files: @src/list_sort.h and @src/list_sort.c. They provide interface and the implementation of the merge sort algorithm dedicated for the linked list data structure. It has been used to sort peers for the 'show' command and replaced quick sort based sorting algorithm. I decided to use the merge sort algorithm because it guarantees worst-case time complexity of O(n*log(n)) and it doesn’t require any extra memory space beyond the original data structure.
-Please look at sort_peers() function in @src/show.c how this can be used.
+For the task no. 2, I modified file @src/netlink.c. I added there two functions: get_local_ip4() and get_local_ip6(). These function extract the assigned local IP from AllowsIPs struct (per IP address family).
+This implementation strongly rely on the 'endpoint' struct and its 'src4' and 'src6' fields. Because these fields won't be filled until we receive data from remote peer that's why I decided to add additional way to get the local IP from 'net_device' struct.
+To use these functions, please pass pointer to 'allowedips' struct and pointer to 'in_addr' struct (AF_INET family) or 'in6_addr' struct (AF_INET6 family). They return boolean value - true if the IP address was successfully extracted, otherwise false.
+E.g.
+struct allowedips table;
+struct in_addr ip4;
+struct in6_addr ip6;
+if (get_local_ip4(&table, &ip4)) {
+    printk(KERN_INFO "IPv4 address successfully retrieved");
+}
+
+if (get_local_ip6(&table, &ip6)) {
+    printk(KERN_INFO "IPv6 address successfully retrieved");
+}
+
+
+For the task no. 3, I modified file @src/netlink.c. There is a function called get_peer(). It passes the peer's public key via the netlink interface. For the type message WGPEER_A_PUBLIC_KEY, I pass custom string "Key hidden from userspace tools " instead of original one. In the Base64 scheme, it is encoded to string "S2V5IGhpZGRlbiBmcm9tIHVzZXJzcGFjZSB0b29scyA=". That's why 'wg' tools will print this string for all peers.
+I decided to implement the solution to this task in kernelspace due to security purpose. User can use some tools like 'strace' to look at received data in the raw netlink message before it is encoded and displayed in terminal.
+This is an example output from 'wg' tool:
+peer: S2V5IGhpZGRlbiBmcm9tIHVzZXJzcGFjZSB0b29scyA=
+  endpoint: 172.245.26.38:12912
+  allowed ips: 0.0.0.0/0
+  latest handshake: 6 minutes, 5 seconds ago
+  transfer: 204 B received, 292 B sent
