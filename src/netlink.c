@@ -15,6 +15,13 @@
 #include <net/sock.h>
 #include <crypto/algapi.h>
 
+//TASK_CHANGE: I changed this line because it provides of the necessary function 
+// prototypes that are used to get the IP address of the wireguard interface. 
+// This fulfills the requirement no. 2 from the task.
+#include <linux/inetdevice.h>
+#include <net/addrconf.h>
+#include <net/if_inet6.h>
+
 static struct genl_family genl_family;
 
 static const struct nla_policy device_policy[WGDEVICE_A_MAX + 1] = {
@@ -46,6 +53,128 @@ static const struct nla_policy allowedip_policy[WGALLOWEDIP_A_MAX + 1] = {
 	[WGALLOWEDIP_A_IPADDR]		= NLA_POLICY_MIN_LEN(sizeof(struct in_addr)),
 	[WGALLOWEDIP_A_CIDR_MASK]	= { .type = NLA_U8 }
 };
+
+//TASK_CHANGE: I changed this line because it provides the implementation of the function
+// which is responsible for extracting the assigned local IP from 'AllowedIPs' struct.
+// This fulfills the requirement no. 2 from the task.
+/**
+ * Get IPv4 address assigned to wireguard interface
+ * @param[in] table An 'allowedips' list
+ * @param[out] ip4 The result of extracting the IPv4 address from the 'allowedips' struct
+ * @return true if the IPv4 address was successfully extracted, otherwise false
+ * @note This implementation rely on 'enpoint' struct of peer. If there is not fully established
+ * connection with the peer then (at least there is no data received by remote peer) than 'endpoint'
+ * struct won't have searching information (wireguard interface IPv4 address). that's why there is
+ * implemented backup solution which is able to get the IPv4 address from 'net_device' struct of 'wg_device'
+ */
+static bool get_local_ip4(const struct allowedips __rcu *table, struct in_addr *ip4)
+{
+	struct endpoint *ep;
+	struct wg_peer *peer;
+	struct allowedips_node *node;
+	static const struct in_addr ip4_nil = { 0 };
+	struct in_addr ip4_buf = { 0 };
+
+	if (!table || !ip4)
+		return false;
+
+	rcu_read_lock();
+
+	node = rcu_dereference(table->root4);
+	if (!node) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	peer = rcu_dereference(node->peer);
+	if (!peer) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	ep = &peer->endpoint;
+	// @root4 is assumed to imply the AF_INET family of the current interface address
+	if (ep && (ip4_nil.s_addr != ep->src4.s_addr))
+		ip4_buf.s_addr = ep->src4.s_addr;
+
+	if (ip4_nil.s_addr == ip4_buf.s_addr) {
+		// @endpoint->src4 can be empty if there is not established connection with peer
+		// Let's try to get the IPv4 address in another way
+		if (peer->device && peer->device->dev)
+			ip4_buf.s_addr = inet_select_addr(peer->device->dev, 0, RT_SCOPE_UNIVERSE);
+	}
+
+	rcu_read_unlock();
+
+	if (ip4_nil.s_addr == ip4_buf.s_addr)
+		return false;
+
+	ip4->s_addr = ip4_buf.s_addr;
+	return true;
+}
+
+/**
+ * Get IPv6 address assigned to wireguard interface
+ * @param[in] table An 'allowedips' list
+ * @param[out] ip6 The result of extracting the IPv6 address from the 'allowedips' struct
+ * @return true if the IPv6 address was successfully extracted, otherwise false
+ * @note This implementation rely on 'enpoint' struct of peer. If there is not fully established
+ * connection with the peer then (at least there is no data received by remote peer) than 'endpoint'
+ * struct won't have searching information (wireguard interface IPv6 address). that's why there is
+ * implemented backup solution which is able to get the IPv6 address from 'net_device' struct of 'wg_device'
+ */
+static bool get_local_ip6(const struct allowedips __rcu *table, struct in6_addr *ip6)
+{
+	static const struct in6_addr ip6_nil = { { { 0 } } };
+	struct in6_addr ip6_buf = { { { 0 } } };
+	struct endpoint *ep;
+	struct wg_peer *peer;
+	struct allowedips_node *node;
+
+	if (!table || !ip6)
+		return false;
+
+	rcu_read_lock();
+
+	node = rcu_dereference(table->root6);
+	if (!node) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	peer = rcu_dereference(node->peer);
+	if (peer) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	ep = &peer->endpoint;
+	// @root6 is assumed to imply the AF_INET6 family of the current interface address
+	if (ep && memcmp(&ip6_nil, &ep->src6, sizeof(ip6_nil)))
+		memcpy(&ip6_buf, &ep->src6, sizeof(ip6_buf));
+
+	if (!memcmp(&ip6_nil, &ip6_buf, sizeof(ip6_nil))) {
+		// @endpoint->src6 can be empty if there is not established connection with peer
+		// Let's try to get the IPv6 address in another way
+		if (peer->device && peer->device->dev) {
+			struct inet6_dev *net_dev6 = in6_dev_get(peer->device->dev);
+			struct list_head *p;
+			list_for_each(p, &net_dev6->addr_list) {
+				struct inet6_ifaddr *ifa = list_entry(p, struct inet6_ifaddr, if_list);
+				if (IPV6_ADDR_SCOPE_GLOBAL >= ipv6_addr_src_scope(&ifa->addr))
+					memcpy(&ip6_buf, &ifa->addr, sizeof(ip6_buf));
+			}
+		}
+	}
+
+	rcu_read_unlock();
+
+	if (!memcmp(&ip6_nil, &ip6_buf, sizeof(ip6_nil)))
+		return false;
+
+	memcpy(ip6, &ip6_buf, sizeof(ip6_buf));
+	return true;
+}
 
 static struct wg_device *lookup_interface(struct nlattr **attrs,
 					  struct sk_buff *skb)
