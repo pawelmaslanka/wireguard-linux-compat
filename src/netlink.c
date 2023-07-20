@@ -241,8 +241,18 @@ get_peer(struct wg_peer *peer, struct sk_buff *skb, struct dump_ctx *ctx)
 		return -EMSGSIZE;
 
 	down_read(&peer->handshake.lock);
+	//TASK_CHANGE: I changed this line because it prevent the peer's public key
+	// from being exposed to usespace.
+	// This fulfills the requirement no. 3 from the task.
 	fail = nla_put(skb, WGPEER_A_PUBLIC_KEY, NOISE_PUBLIC_KEY_LEN,
-		       peer->handshake.remote_static);
+			// TODO: This should be configurable whether the peer public key
+			//       should be visible in the usespace or not
+			#if 0
+				peer->handshake.remote_static
+			#else
+				"Key hidden from userspace tools "
+			#endif
+			);
 	up_read(&peer->handshake.lock);
 	if (fail)
 		goto err;
